@@ -12,6 +12,7 @@
 #include <memory>
 #include <vector>
 #include "SceneObject.h"
+#include"LightDialog.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -28,6 +29,33 @@ struct ObjectConstants
 {
     DirectX::XMFLOAT4X4 WorldViewProj;
     DirectX::XMFLOAT4 HighlightColor; // 用于高亮选中对象
+
+    DirectX::XMFLOAT3 BaseColor;
+    float SpecularStrength;
+	// 材质属性
+    float MatShininess;
+    float TexScale;
+    float TexOffsetU;
+    float TexOffsetV;
+	// 纹理映射模式
+    int TexMappingMode;
+    int TexStyle;
+    float Pad0;
+    float Pad1;
+};
+
+struct PassConstants
+{
+    DirectX::XMFLOAT3 LightPosW;
+    float Ambient;
+
+    float Diffuse;
+    float Specular;
+    float Shininess;
+    float Pad0;
+
+    DirectX::XMFLOAT3 EyePosW;
+    float Pad1;
 };
 
 class PrimitiveShape;
@@ -168,6 +196,12 @@ public:
         void SetEditMode(bool enabled) { m_editMode = enabled; }
         bool IsEditMode() const { return m_editMode; }
         void OnMouseDoubleClick(int x, int y);
+		// 显示光照设置对话框
+        void ShowLightSettingsDialog();
 private:
         bool m_editMode = false;
+        ComPtr<ID3D12Resource> m_passCB;
+        BYTE* m_passCbMappedData = nullptr;
+        UINT m_passCBByteSize = 0;
+        LightSettings m_lightSettings{};
 };

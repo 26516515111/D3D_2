@@ -403,12 +403,12 @@ bool D3DManager::CompileShaders()
 // ============================================================================
 bool D3DManager::BuildRootSignature()
 {
-    // 根参数：一个常量缓冲区视图
-    CD3DX12_ROOT_PARAMETER slotRootParameter[1];
-    slotRootParameter[0].InitAsConstantBufferView(0);
+    CD3DX12_ROOT_PARAMETER slotRootParameter[2];
+    slotRootParameter[0].InitAsConstantBufferView(0); // b0: per-object
+    slotRootParameter[1].InitAsConstantBufferView(1); // b1: per-pass (light/camera)
 
     CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
-        1, slotRootParameter,
+        _countof(slotRootParameter), slotRootParameter,
         0, nullptr,
         D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
     );
@@ -513,6 +513,26 @@ bool D3DManager::BuildConstantBuffers()
     m_d3dDevice->CreateConstantBufferView(
         &cbvDesc,
         m_cbvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    // -------- per-pass CB (b1) --------
+    m_passCBByteSize = (sizeof(PassConstants) + 255) & ~255;
+
+    CD3DX12_RESOURCE_DESC passDesc = CD3DX12_RESOURCE_DESC::Buffer(m_passCBByteSize);
+    if (FAILED(m_d3dDevice->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &passDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&m_passCB))))
+    {
+        return false;
+    }
+
+    if (FAILED(m_passCB->Map(0, nullptr, reinterpret_cast<void**>(&m_passCbMappedData))))
+    {
+        return false;
+    }
 
     return true;
 }
@@ -636,6 +656,16 @@ void D3DManager::OnMouseDoubleClick(int x, int y)
     }
 }
 
+void D3DManager::ShowLightSettingsDialog()
+{
+    if (!m_hWnd)
+    {
+        return;
+    }
+    (void)ShowLightDialog(m_hWnd, m_lightSettings);
+
+}
+
 // ============================================================================
 // 渲染函数
 // ============================================================================
@@ -667,6 +697,17 @@ void D3DManager::Render()
 
     UpdateCamera();
 
+    // 更新并绑定 per-pass 常量（b1）
+    PassConstants pass{};
+    pass.LightPosW = DirectX::XMFLOAT3(m_lightSettings.PosX, m_lightSettings.PosY, m_lightSettings.PosZ);
+    pass.Ambient = m_lightSettings.Ambient;
+    pass.Diffuse = m_lightSettings.Diffuse;
+    pass.Specular = m_lightSettings.Specular;
+    pass.Shininess = m_lightSettings.Shininess;
+    pass.EyePosW = m_eyePos;
+
+    memcpy(m_passCbMappedData, &pass, sizeof(pass));
+    m_commandList->SetGraphicsRootConstantBufferView(1, m_passCB->GetGPUVirtualAddress());
     UINT objIndex = 0;
 
     for (auto& obj : m_sceneObjects)
@@ -747,7 +788,7 @@ void D3DManager::UpdateObjectCB(SceneObject* obj, UINT objectIndex)
     XMMATRIX proj = XMLoadFloat4x4(&m_proj);
     XMMATRIX worldViewProj = world * view * proj;
 
-    ObjectConstants objConstants;
+    ObjectConstants objConstants{};
     XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
 
     if (obj->IsSelected())
@@ -759,7 +800,20 @@ void D3DManager::UpdateObjectCB(SceneObject* obj, UINT objectIndex)
         objConstants.HighlightColor = XMFLOAT4(0.0f, 0.0f, 0.0f, 0.0f);
     }
 
-    // 写入该对象对应的常量缓冲区位置
+    const auto& mat = obj->GetMaterial();
+    objConstants.BaseColor = mat.BaseColor;
+    objConstants.SpecularStrength = mat.SpecularStrength;
+    objConstants.MatShininess = mat.Shininess;
+
+    const auto mapping = obj->GetTextureMappingMode();
+    objConstants.TexMappingMode = (int)mapping;
+    objConstants.TexStyle = (int)obj->GetTextureStyle();
+
+    // 先给默认：可以后放进对话框参数
+    objConstants.TexScale = 1.0f;
+    objConstants.TexOffsetU = 0.0f;
+    objConstants.TexOffsetV = 0.0f;
+
     UINT offset = objectIndex * m_objCBByteSize;
     memcpy(m_cbMappedData + offset, &objConstants, sizeof(ObjectConstants));
 }
@@ -1082,6 +1136,11 @@ void D3DManager::Cleanup()
     {
         m_objectCB->Unmap(0, nullptr);
         m_cbMappedData = nullptr;
+    }
+    if (m_passCB != nullptr && m_passCbMappedData != nullptr)
+    {
+        m_passCB->Unmap(0, nullptr);
+        m_passCbMappedData = nullptr;
     }
 
     if (m_fenceEvent)

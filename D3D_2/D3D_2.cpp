@@ -23,6 +23,7 @@ HMENU CreateAppMenu()
 
     // 场景菜单
     HMENU hSceneMenu = CreatePopupMenu();
+    AppendMenu(hSceneMenu, MF_STRING, IDM_LIGHT_SETTINGS, L"光照设置(&L)");
     AppendMenu(hSceneMenu, MF_STRING, IDM_CLEAR_SCENE, L"清空场景(&C)");
 
 
@@ -174,6 +175,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             CheckMenuItem(GetMenu(hWnd), IDM_EDIT_TRANSFORM, MF_BYCOMMAND | (enabled ? MF_CHECKED : MF_UNCHECKED));
             break;
         }
+        case IDM_LIGHT_SETTINGS:
+            g_pD3DManager->ShowLightSettingsDialog();
+            break;
         default:
             return DefWindowProc(hWnd, message, wParam, lParam);
         }

@@ -37,6 +37,101 @@ namespace
         return true;
     }
 
+    bool Validate01(HWND hDlg, int ctrlId, float v, const wchar_t* name)
+    {
+        if (v < 0.0f || v > 1.0f)
+        {
+            wchar_t msg[128]{};
+            swprintf_s(msg, L"%s 必须在 0~1 之间。", name);
+            MessageBoxW(hDlg, msg, L"输入错误", MB_OK | MB_ICONWARNING);
+            SetFocus(GetDlgItem(hDlg, ctrlId));
+            SendDlgItemMessageW(hDlg, ctrlId, EM_SETSEL, 0, -1);
+            return false;
+        }
+
+        return true;
+    }
+
+    void InitTextureMappingCombo(HWND hDlg, const SceneObject* obj)
+    {
+        HWND hCombo = GetDlgItem(hDlg, IDC_TEX_MAPPING);
+        if (!hCombo)
+        {
+            return;
+        }
+
+        SendMessageW(hCombo, CB_RESETCONTENT, 0, 0);
+        SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"平面(Planar)");
+        SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"柱面(Cylindrical)");
+        SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"球面(Spherical)");
+
+        int curSel = 0;
+        if (obj)
+        {
+            curSel = (int)obj->GetTextureMappingMode();
+            if (curSel < 0 || curSel > 2)
+            {
+                curSel = 0;
+            }
+        }
+
+        SendMessageW(hCombo, CB_SETCURSEL, (WPARAM)curSel, 0);
+    }
+
+    void InitTextureStyleCombo(HWND hDlg, const SceneObject* obj)
+    {
+        HWND hCombo = GetDlgItem(hDlg, IDC_TEX_STYLE);
+        if (!hCombo)
+        {
+            return;
+        }
+
+        SendMessageW(hCombo, CB_RESETCONTENT, 0, 0);
+        SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"棋盘格(Checker)");
+        SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"条纹(Stripes)");
+        SendMessageW(hCombo, CB_ADDSTRING, 0, (LPARAM)L"图片(占位)");
+
+        int curSel = 0;
+        if (obj)
+        {
+            curSel = (int)obj->GetTextureStyle();
+            if (curSel < 0 || curSel > 2)
+            {
+                curSel = 0;
+            }
+        }
+
+        SendMessageW(hCombo, CB_SETCURSEL, (WPARAM)curSel, 0);
+    }
+
+    void BrowseTextureFile(HWND hDlg)
+    {
+        // A 方案：仅选择文件路径并保存，不负责加载纹理资源
+        wchar_t fileBuf[MAX_PATH]{};
+
+        OPENFILENAMEW ofn{};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = hDlg;
+        ofn.lpstrFile = fileBuf;
+        ofn.nMaxFile = (DWORD)_countof(fileBuf);
+
+        // 不限制扩展名（后续你可按需要收紧）
+        ofn.lpstrFilter = L"所有文件 (*.*)\0*.*\0";
+        ofn.nFilterIndex = 1;
+        ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+
+        if (GetOpenFileNameW(&ofn))
+        {
+            SetDlgItemTextW(hDlg, IDC_TEX_PATH, fileBuf);
+
+            HWND hStyle = GetDlgItem(hDlg, IDC_TEX_STYLE);
+            if (hStyle)
+            {
+                SendMessageW(hStyle, CB_SETCURSEL, (WPARAM)2, 0);
+            }
+        }
+    }
+
     INT_PTR CALLBACK TransformDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         switch (msg)
@@ -52,12 +147,11 @@ namespace
                 return TRUE;
             }
 
-            // 读取对象当前变换，填入对话框
+            // 变换
             XMFLOAT3 pos = state->Obj->GetPosition();
             XMFLOAT3 rotRad = state->Obj->GetRotation();
             float scale = state->Obj->GetScale();
 
-            // 旋转：对话框用“角度”，内部是“弧度”
             XMFLOAT3 rotDeg(
                 XMConvertToDegrees(rotRad.x),
                 XMConvertToDegrees(rotRad.y),
@@ -73,12 +167,29 @@ namespace
 
             SetDlgItemFloat(hDlg, IDC_SCALE, scale);
 
+            // 材质（1+2+3）
+            const auto& mat = state->Obj->GetMaterial();
+            SetDlgItemFloat(hDlg, IDC_MAT_R, mat.BaseColor.x);
+            SetDlgItemFloat(hDlg, IDC_MAT_G, mat.BaseColor.y);
+            SetDlgItemFloat(hDlg, IDC_MAT_B, mat.BaseColor.z);
+            SetDlgItemFloat(hDlg, IDC_MAT_SPECULAR, mat.SpecularStrength);
+            SetDlgItemFloat(hDlg, IDC_MAT_SHININESS, mat.Shininess);
+
+            // 纹理（A 方案：仅保存路径 + 选择映射方式）
+            SetDlgItemTextW(hDlg, IDC_TEX_PATH, state->Obj->GetTexturePath().c_str());
+            InitTextureMappingCombo(hDlg, state->Obj);
+            InitTextureStyleCombo(hDlg, state->Obj);
+
             return TRUE;
         }
         case WM_COMMAND:
         {
             switch (LOWORD(wParam))
             {
+            case IDC_TEX_BROWSE:
+                BrowseTextureFile(hDlg);
+                return TRUE;
+
             case IDOK:
             {
                 auto* state = reinterpret_cast<TransformDialogState*>(GetWindowLongPtrW(hDlg, GWLP_USERDATA));
@@ -88,9 +199,15 @@ namespace
                     return TRUE;
                 }
 
+                // 变换输入
                 float px, py, pz;
                 float rxDeg, ryDeg, rzDeg;
                 float scale;
+
+                // 材质输入
+                float r, g, b;
+                float specularStrength;
+                float shininess;
 
                 if (!TryGetDlgItemFloat(hDlg, IDC_POS_X, px) ||
                     !TryGetDlgItemFloat(hDlg, IDC_POS_Y, py) ||
@@ -98,7 +215,12 @@ namespace
                     !TryGetDlgItemFloat(hDlg, IDC_ROT_X, rxDeg) ||
                     !TryGetDlgItemFloat(hDlg, IDC_ROT_Y, ryDeg) ||
                     !TryGetDlgItemFloat(hDlg, IDC_ROT_Z, rzDeg) ||
-                    !TryGetDlgItemFloat(hDlg, IDC_SCALE, scale))
+                    !TryGetDlgItemFloat(hDlg, IDC_SCALE, scale) ||
+                    !TryGetDlgItemFloat(hDlg, IDC_MAT_R, r) ||
+                    !TryGetDlgItemFloat(hDlg, IDC_MAT_G, g) ||
+                    !TryGetDlgItemFloat(hDlg, IDC_MAT_B, b) ||
+                    !TryGetDlgItemFloat(hDlg, IDC_MAT_SPECULAR, specularStrength) ||
+                    !TryGetDlgItemFloat(hDlg, IDC_MAT_SHININESS, shininess))
                 {
                     MessageBoxW(hDlg, L"请输入有效数字。", L"输入错误", MB_OK | MB_ICONWARNING);
                     return TRUE;
@@ -110,9 +232,54 @@ namespace
                     return TRUE;
                 }
 
-                XMFLOAT3 pos(px, py, pz);
+                if (!Validate01(hDlg, IDC_MAT_R, r, L"BaseColor R") ||
+                    !Validate01(hDlg, IDC_MAT_G, g, L"BaseColor G") ||
+                    !Validate01(hDlg, IDC_MAT_B, b, L"BaseColor B") ||
+                    !Validate01(hDlg, IDC_MAT_SPECULAR, specularStrength, L"Specular"))
+                {
+                    return TRUE;
+                }
 
-                // 角度 -> 弧度
+                if (shininess < 1.0f)
+                {
+                    MessageBoxW(hDlg, L"Shininess 必须 >= 1。", L"输入错误", MB_OK | MB_ICONWARNING);
+                    SetFocus(GetDlgItem(hDlg, IDC_MAT_SHININESS));
+                    SendDlgItemMessageW(hDlg, IDC_MAT_SHININESS, EM_SETSEL, 0, -1);
+                    return TRUE;
+                }
+
+                // 纹理路径（A 方案：保存字符串）
+                wchar_t texPath[512]{};
+                GetDlgItemTextW(hDlg, IDC_TEX_PATH, texPath, (int)_countof(texPath));
+                state->Obj->SetTexturePath(texPath);
+
+                // 纹理映射方式
+                int mappingIndex = 0;
+                HWND hCombo = GetDlgItem(hDlg, IDC_TEX_MAPPING);
+                if (hCombo)
+                {
+                    mappingIndex = (int)SendMessageW(hCombo, CB_GETCURSEL, 0, 0);
+                    if (mappingIndex < 0)
+                    {
+                        mappingIndex = 0;
+                    }
+                }
+                state->Obj->SetTextureMappingMode((TextureMappingMode)mappingIndex);
+
+                int styleIndex = 0;
+                HWND hStyle = GetDlgItem(hDlg, IDC_TEX_STYLE);
+                if (hStyle)
+                {
+                    styleIndex = (int)SendMessageW(hStyle, CB_GETCURSEL, 0, 0);
+                    if (styleIndex < 0)
+                    {
+                        styleIndex = 0;
+                    }
+                }
+                state->Obj->SetTextureStyle((TextureStyle)styleIndex);
+
+                // 应用变换
+                XMFLOAT3 pos(px, py, pz);
                 XMFLOAT3 rotRad(
                     XMConvertToRadians(rxDeg),
                     XMConvertToRadians(ryDeg),
@@ -121,6 +288,13 @@ namespace
                 state->Obj->SetPosition(pos);
                 state->Obj->SetRotation(rotRad);
                 state->Obj->SetScale(scale);
+
+                // 应用材质
+                Material mat = state->Obj->GetMaterial();
+                mat.BaseColor = XMFLOAT3(r, g, b);
+                mat.SpecularStrength = specularStrength;
+                mat.Shininess = shininess;
+                state->Obj->SetMaterial(mat);
 
                 EndDialog(hDlg, IDOK);
                 return TRUE;

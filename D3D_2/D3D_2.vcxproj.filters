@@ -36,6 +36,9 @@
     <ClInclude Include="SceneObject.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="TransformDialog.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="D3D_2.cpp">
@@ -48,6 +51,9 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="SceneObject.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="TransformDialog.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>

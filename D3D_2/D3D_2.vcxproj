@@ -135,12 +135,14 @@
     <ClInclude Include="Resource.h" />
     <ClInclude Include="SceneObject.h" />
     <ClInclude Include="targetver.h" />
+    <ClInclude Include="TransformDialog.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="D3DManager.cpp" />
     <ClCompile Include="D3D_2.cpp" />
     <ClCompile Include="PrimitiveShape.cpp" />
     <ClCompile Include="SceneObject.cpp" />
+    <ClCompile Include="TransformDialog.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="D3D_2.rc" />

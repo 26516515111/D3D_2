@@ -1,6 +1,9 @@
 #include "D3DManager.h"
 #include "PrimitiveShape.h"
 #include <comdef.h>
+#include"TransformDialog.h"
+//#include <commctrl.h> // 若后续加工具条可用；此处可不加
+
 
 using namespace DirectX;
 
@@ -444,8 +447,12 @@ bool D3DManager::BuildPSO()
     // 顶点输入布局
     D3D12_INPUT_ELEMENT_DESC inputElementDescs[] =
     {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        // 位置在偏移 0
+     { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+     // 法线在偏移 12
+     { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+     // 颜色在偏移 24
+    { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
@@ -593,6 +600,39 @@ std::shared_ptr<PrimitiveShape> D3DManager::GetShapeTemplate(ShapeType type)
     case ShapeType::Cube: return m_cubeTemplate;
     case ShapeType::Tetrahedron: return m_tetrahedronTemplate;
     default: return nullptr;
+    }
+}
+
+void D3DManager::OnMouseDoubleClick(int x, int y)
+{
+    if (!m_editMode)
+    {
+        return;
+    }
+
+    // 如果没有选中对象，双击也尝试拾取一次
+    if (!m_selectedObject)
+    {
+        SceneObject* pickedObj = PickObject(x, y);
+        if (pickedObj)
+        {
+            if (m_selectedObject)
+            {
+                m_selectedObject->SetSelected(false);
+            }
+
+            m_selectedObject = pickedObj;
+            m_selectedObject->SetSelected(true);
+        }
+    }
+
+    if (!m_selectedObject)
+    {
+        return;
+    }
+    else {
+        // 弹出属性对话框
+		ShowTransformDialog(m_hWnd, m_selectedObject);
     }
 }
 

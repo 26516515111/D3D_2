@@ -24,12 +24,14 @@ HMENU CreateAppMenu()
     // 场景菜单
     HMENU hSceneMenu = CreatePopupMenu();
     AppendMenu(hSceneMenu, MF_STRING, IDM_CLEAR_SCENE, L"清空场景(&C)");
-    AppendMenu(hSceneMenu, MF_SEPARATOR, 0, nullptr);
-    AppendMenu(hSceneMenu, MF_STRING, IDM_EXIT, L"退出(&X)");
+
+
+    HMENU hPicMenu = CreatePopupMenu();
+    AppendMenu(hPicMenu, MF_STRING, IDM_EDIT_TRANSFORM, L"编辑变换(&E)");
 
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hAddMenu, L"添加形状(&A)");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hSceneMenu, L"场景(&S)");
-
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hPicMenu, L"图形编辑(&M)");
     return hMenu;
 }
 
@@ -40,7 +42,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     // 注册窗口类
     WNDCLASSEX wcex = {};
     wcex.cbSize = sizeof(WNDCLASSEX);
-    wcex.style = CS_HREDRAW | CS_VREDRAW;
+    wcex.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wcex.lpfnWndProc = WndProc;
     wcex.hInstance = hInstance;
     wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
@@ -166,9 +168,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             g_pD3DManager->ClearScene();
             objectCount = 0;
             break;
-        case IDM_EXIT:
-            DestroyWindow(hWnd);
+        case IDM_EDIT_TRANSFORM: {
+            bool enabled = !g_pD3DManager->IsEditMode();
+            g_pD3DManager->SetEditMode(enabled);
+            CheckMenuItem(GetMenu(hWnd), IDM_EDIT_TRANSFORM, MF_BYCOMMAND | (enabled ? MF_CHECKED : MF_UNCHECKED));
             break;
+        }
         default:
             return DefWindowProc(hWnd, message, wParam, lParam);
         }
@@ -182,6 +187,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (g_pD3DManager)
         {
             g_pD3DManager->OnMouseDown(x, y);
+        }
+        break;
+    }
+    case WM_LBUTTONDBLCLK:
+    {
+        int x = LOWORD(lParam);
+        int y = HIWORD(lParam);
+        if (g_pD3DManager)
+        {
+            g_pD3DManager->OnMouseDoubleClick(x, y);
         }
         break;
     }

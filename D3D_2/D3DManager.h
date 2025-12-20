@@ -19,6 +19,7 @@ using Microsoft::WRL::ComPtr;
 struct Vertex
 {
     DirectX::XMFLOAT3 Pos;
+    DirectX::XMFLOAT3 Normal;//·¨Ïß
     DirectX::XMFLOAT4 Color;
 };
 
@@ -163,4 +164,10 @@ private:
     ID3D12Resource* CurrentBackBuffer() const;
 
     std::shared_ptr<PrimitiveShape> GetShapeTemplate(ShapeType type);
+public:
+        void SetEditMode(bool enabled) { m_editMode = enabled; }
+        bool IsEditMode() const { return m_editMode; }
+        void OnMouseDoubleClick(int x, int y);
+private:
+        bool m_editMode = false;
 };

@@ -13,7 +13,8 @@ cbuffer cbPerObject : register(b0)
 
     int gTexMappingMode;
     int gTexStyle;
-    float2 _padObj;
+    int gHasTexture;
+    float _padObj;
 };
 
 cbuffer cbPerPass : register(b1)
@@ -44,6 +45,9 @@ struct VertexOut
     float3 PosW : POSITION1;
 };
 
+Texture2D gTexture : register(t0);
+SamplerState gSampler : register(s0);
+
 VertexOut VS(VertexIn vin)
 {
     VertexOut vout;
@@ -55,18 +59,29 @@ VertexOut VS(VertexIn vin)
     return vout;
 }
 
-// 生成 UV：按 mapping mode 从位置生成
-float2 CalcUV(float3 posW, int mode)
+// 生成 UV：按 mapping mode 从位置和法线生成
+float2 CalcUV(float3 posW, float3 normalW, int mode)
 {
     // posW 大致在 [-1,1] or [-radius,radius]，先做一个缩放
     float3 p = posW;
 
-    if (mode == 0) // Planar: XZ
+    if (mode == 0) // Planar: pick best axis by normal
     {
-        return p.xz;
+        float3 n = abs(normalW);
+        if (n.y >= n.x && n.y >= n.z)
+            return p.xz;           // top/bottom
+        else if (n.x >= n.y && n.x >= n.z)
+            return float2(p.z, p.y); // left/right
+        else
+            return float2(p.x, p.y); // front/back
     }
-    else if (mode == 1) // Cylindrical: around Y (theta, y)
+    else if (mode == 1) // Cylindrical: around Y; caps fall back to planar
     {
+        if (abs(normalW.y) > 0.75f)
+        {
+            return p.xz; // caps
+        }
+
         float theta = atan2(p.z, p.x); // [-pi,pi]
         float u = (theta / 6.2831853f) + 0.5f;
         float v = p.y; // 直接用 y，演示用
@@ -117,12 +132,19 @@ float4 PS(VertexOut pin) : SV_Target
     float3 diffuse = (gDiffuse * ndotl).xxx;
     float3 specular = (gSpecular * gSpecularStrength * spec).xxx;
 
-    float2 uv = CalcUV(pin.PosW, gTexMappingMode);
+    float2 uv = CalcUV(pin.PosW, pin.NormalW, gTexMappingMode);
     uv = uv * gTexScale + float2(gTexOffsetU, gTexOffsetV);
 
-    // 程序化贴图：checker 颜色
-    float p = Pattern(uv, gTexStyle);
-    float3 texColor = lerp(float3(0.1f, 0.1f, 0.1f), float3(1.0f, 1.0f, 1.0f), p);
+    float3 texColor;
+    if (gHasTexture == 1)
+    {
+        texColor = gTexture.Sample(gSampler, uv).rgb;
+    }
+    else
+    {
+        float p = Pattern(uv, gTexStyle);
+        texColor = lerp(float3(0.1f, 0.1f, 0.1f), float3(1.0f, 1.0f, 1.0f), p);
+    }
 
     float3 baseColor = (gBaseColor * texColor) * (ambient + diffuse) + specular;
     float4 finalColor = float4(baseColor, 1.0f);

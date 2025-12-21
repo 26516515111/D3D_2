@@ -11,6 +11,7 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <unordered_map>
 #include "SceneObject.h"
 #include"LightDialog.h"
 
@@ -40,8 +41,8 @@ struct ObjectConstants
 	// 纹理映射模式
     int TexMappingMode;
     int TexStyle;
+    int HasTexture;
     float Pad0;
-    float Pad1;
 };
 
 struct PassConstants
@@ -101,6 +102,7 @@ private:
     ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
     ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
     ComPtr<ID3D12DescriptorHeap> m_cbvHeap;
+    ComPtr<ID3D12DescriptorHeap> m_srvHeap;
 
     UINT m_rtvDescriptorSize = 0;
     UINT m_dsvDescriptorSize = 0;
@@ -129,6 +131,13 @@ private:
     BYTE* m_cbMappedData = nullptr;
     UINT m_objCBByteSize = 0;
     static const UINT MaxObjects = 256;
+    static const UINT MaxTextureCount = MaxObjects + 1;
+
+    ComPtr<ID3D12Resource> m_defaultTexture;
+    std::unordered_map<SceneObject*, Microsoft::WRL::ComPtr<ID3D12Resource>> m_objectTextures;
+    std::unordered_map<SceneObject*, int> m_objectSrvIndex;
+    std::vector<int> m_freeSrvIndices;
+    int m_nextSrvIndex = 1;
 
     // 几何体模板（共享）
     std::shared_ptr<PrimitiveShape> m_sphereTemplate;
@@ -174,6 +183,15 @@ private:
     bool BuildPSO();
     bool BuildShapeGeometry();
     bool BuildConstantBuffers();
+    bool CreateDefaultTexture();
+    bool LoadTextureForObject(SceneObject* obj);
+    bool CreateTextureFromFile(const std::wstring& path,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& texture,
+        D3D12_CPU_DESCRIPTOR_HANDLE srvHandle);
+    D3D12_CPU_DESCRIPTOR_HANDLE GetSrvCpuHandle(int index) const;
+    D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandle(int index) const;
+    bool HasTexture(SceneObject* obj) const;
+    void ReleaseTexture(SceneObject* obj);
 
     // 渲染辅助函数
     void UpdateCamera();

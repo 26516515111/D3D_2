@@ -2,7 +2,11 @@
 #include "PrimitiveShape.h"
 #include <comdef.h>
 #include"TransformDialog.h"
+#include <wincodec.h>
 //#include <commctrl.h> // 若后续加工具条可用；此处可不加
+
+#pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "dxguid.lib")
 
 
 using namespace DirectX;
@@ -53,6 +57,7 @@ bool D3DManager::InitD3D(HWND hWnd, int width, int height)
     if (!BuildPSO()) return false;
     if (!BuildConstantBuffers()) return false;
     if (!BuildShapeGeometry()) return false;
+    if (!CreateDefaultTexture()) return false;
 
     m_screenViewport.TopLeftX = 0;
     m_screenViewport.TopLeftY = 0;
@@ -62,6 +67,129 @@ bool D3DManager::InitD3D(HWND hWnd, int width, int height)
     m_screenViewport.MaxDepth = 1.0f;
 
     m_scissorRect = { 0, 0, width, height };
+
+    return true;
+}
+
+bool D3DManager::LoadTextureForObject(SceneObject* obj)
+{
+    if (!obj)
+    {
+        return false;
+    }
+
+    const std::wstring& path = obj->GetTexturePath();
+    if (path.empty())
+    {
+        ReleaseTexture(obj);
+        return true;
+    }
+
+    int srvIndex = 0;
+    bool newIndex = false;
+    auto it = m_objectSrvIndex.find(obj);
+    if (it != m_objectSrvIndex.end())
+    {
+        srvIndex = it->second;
+    }
+    else
+    {
+        newIndex = true;
+        if (!m_freeSrvIndices.empty())
+        {
+            srvIndex = m_freeSrvIndices.back();
+            m_freeSrvIndices.pop_back();
+        }
+        else
+        {
+            srvIndex = m_nextSrvIndex++;
+        }
+
+        if (srvIndex >= (int)MaxTextureCount)
+        {
+            return false;
+        }
+        m_objectSrvIndex[obj] = srvIndex;
+    }
+
+    ComPtr<ID3D12Resource> texture;
+    if (!CreateTextureFromFile(path, texture, GetSrvCpuHandle(srvIndex)))
+    {
+        if (newIndex)
+        {
+            m_objectSrvIndex.erase(obj);
+            m_freeSrvIndices.push_back(srvIndex);
+        }
+        return false;
+    }
+
+    m_objectTextures[obj] = texture;
+    return true;
+}
+
+bool D3DManager::CreateDefaultTexture()
+{
+    // 创建 1x1 白色纹理作为占位符
+    UINT color = 0xFFFFFFFF;
+
+    CD3DX12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1);
+
+    CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+    if (FAILED(m_d3dDevice->CreateCommittedResource(
+        &defaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(&m_defaultTexture))))
+    {
+        return false;
+    }
+
+    const UINT64 uploadBufferSize = GetRequiredIntermediateSize(m_defaultTexture.Get(), 0, 1);
+    CD3DX12_HEAP_PROPERTIES uploadHeap(D3D12_HEAP_TYPE_UPLOAD);
+    CD3DX12_RESOURCE_DESC uploadDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize);
+    ComPtr<ID3D12Resource> uploadBuffer;
+    if (FAILED(m_d3dDevice->CreateCommittedResource(
+        &uploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &uploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&uploadBuffer))))
+    {
+        return false;
+    }
+
+    D3D12_SUBRESOURCE_DATA subResource{};
+    subResource.pData = &color;
+    subResource.RowPitch = sizeof(UINT);
+    subResource.SlicePitch = subResource.RowPitch;
+
+    m_commandAllocator->Reset();
+    m_commandList->Reset(m_commandAllocator.Get(), nullptr);
+
+    UpdateSubresources(m_commandList.Get(), m_defaultTexture.Get(), uploadBuffer.Get(), 0, 0, 1, &subResource);
+    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_defaultTexture.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    m_commandList->ResourceBarrier(1, &barrier);
+
+    m_commandList->Close();
+    ID3D12CommandList* cmdsLists[] = { m_commandList.Get() };
+    m_commandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+    FlushCommandQueue();
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    m_d3dDevice->CreateShaderResourceView(m_defaultTexture.Get(), &srvDesc, GetSrvCpuHandle(0));
 
     return true;
 }
@@ -116,6 +244,7 @@ void D3DManager::DeleteSelectedObject()
     {
         if (it->get() == m_selectedObject)
         {
+            ReleaseTexture(it->get());
             m_sceneObjects.erase(it);
             break;
         }
@@ -276,6 +405,14 @@ bool D3DManager::CreateDescriptorHeaps()
     if (FAILED(m_d3dDevice->CreateDescriptorHeap(&cbvHeapDesc, IID_PPV_ARGS(&m_cbvHeap))))
         return false;
 
+    // SRV 堆（默认纹理 + 每个对象一张）
+    D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+    srvHeapDesc.NumDescriptors = MaxTextureCount;
+    srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    if (FAILED(m_d3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap))))
+        return false;
+
     return true;
 }
 
@@ -403,13 +540,19 @@ bool D3DManager::CompileShaders()
 // ============================================================================
 bool D3DManager::BuildRootSignature()
 {
-    CD3DX12_ROOT_PARAMETER slotRootParameter[2];
+    CD3DX12_DESCRIPTOR_RANGE srvRange;
+    srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+
+    CD3DX12_ROOT_PARAMETER slotRootParameter[3];
     slotRootParameter[0].InitAsConstantBufferView(0); // b0: per-object
     slotRootParameter[1].InitAsConstantBufferView(1); // b1: per-pass (light/camera)
+    slotRootParameter[2].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_PIXEL);
+
+    CD3DX12_STATIC_SAMPLER_DESC sampler(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
 
     CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
         _countof(slotRootParameter), slotRootParameter,
-        0, nullptr,
+        1, &sampler,
         D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
     );
 
@@ -604,6 +747,10 @@ void D3DManager::AddObject(ShapeType type, const XMFLOAT3& position)
 void D3DManager::ClearScene()
 {
     m_sceneObjects.clear();
+    m_objectTextures.clear();
+    m_objectSrvIndex.clear();
+    m_freeSrvIndices.clear();
+    m_nextSrvIndex = 1;
     m_selectedObject = nullptr;
 }
 
@@ -652,7 +799,10 @@ void D3DManager::OnMouseDoubleClick(int x, int y)
     }
     else {
         // 弹出属性对话框
-		ShowTransformDialog(m_hWnd, m_selectedObject);
+		if (ShowTransformDialog(m_hWnd, m_selectedObject))
+		{
+			LoadTextureForObject(m_selectedObject);
+		}
     }
 }
 
@@ -695,6 +845,9 @@ void D3DManager::Render()
 
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
 
+    ID3D12DescriptorHeap* heaps[] = { m_srvHeap.Get() };
+    m_commandList->SetDescriptorHeaps(_countof(heaps), heaps);
+
     UpdateCamera();
 
     // 更新并绑定 per-pass 常量（b1）
@@ -723,6 +876,14 @@ void D3DManager::Render()
             m_objectCB->GetGPUVirtualAddress() + objIndex * m_objCBByteSize;
 
         m_commandList->SetGraphicsRootConstantBufferView(0, objCBAddress);
+
+        int srvIndex = 0;
+        auto it = m_objectSrvIndex.find(obj.get());
+        if (it != m_objectSrvIndex.end())
+        {
+            srvIndex = it->second;
+        }
+        m_commandList->SetGraphicsRootDescriptorTable(2, GetSrvGpuHandle(srvIndex));
 
         PrimitiveShape* shape = obj->GetShape();
         if (shape)
@@ -808,6 +969,7 @@ void D3DManager::UpdateObjectCB(SceneObject* obj, UINT objectIndex)
     const auto mapping = obj->GetTextureMappingMode();
     objConstants.TexMappingMode = (int)mapping;
     objConstants.TexStyle = (int)obj->GetTextureStyle();
+    objConstants.HasTexture = (objConstants.TexStyle == (int)TextureStyle::ImagePlaceholder && HasTexture(obj)) ? 1 : 0;
 
     // 先给默认：可以后放进对话框参数
     objConstants.TexScale = 1.0f;
@@ -1055,6 +1217,172 @@ void D3DManager::ScreenToWorldRay(int mouseX, int mouseY,
     rayDir = XMVector3Normalize(worldFar - worldNear);
 }
 
+bool D3DManager::CreateTextureFromFile(const std::wstring& path,
+    ComPtr<ID3D12Resource>& texture,
+    D3D12_CPU_DESCRIPTOR_HANDLE srvHandle)
+{
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE)
+    {
+        return false;
+    }
+
+    ComPtr<IWICImagingFactory> wicFactory;
+    hr = CoCreateInstance(CLSID_WICImagingFactory2, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wicFactory));
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    hr = wicFactory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder);
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    hr = decoder->GetFrame(0, &frame);
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+    UINT width = 0, height = 0;
+    frame->GetSize(&width, &height);
+    if (width == 0 || height == 0)
+    {
+        return false;
+    }
+
+    ComPtr<IWICFormatConverter> converter;
+    hr = wicFactory->CreateFormatConverter(&converter);
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+    hr = converter->Initialize(
+        frame.Get(),
+        GUID_WICPixelFormat32bppRGBA,
+        WICBitmapDitherTypeNone,
+        nullptr,
+        0.0,
+        WICBitmapPaletteTypeCustom);
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+    std::vector<BYTE> pixelData(width * height * 4);
+    hr = converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixelData.size()), pixelData.data());
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+    CD3DX12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1);
+    CD3DX12_HEAP_PROPERTIES defaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+
+    hr = m_d3dDevice->CreateCommittedResource(
+        &defaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(&texture));
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+    UINT64 uploadBufferSize = GetRequiredIntermediateSize(texture.Get(), 0, 1);
+    CD3DX12_HEAP_PROPERTIES uploadHeap(D3D12_HEAP_TYPE_UPLOAD);
+    CD3DX12_RESOURCE_DESC uploadDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize);
+    ComPtr<ID3D12Resource> uploadBuffer;
+    hr = m_d3dDevice->CreateCommittedResource(
+        &uploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &uploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&uploadBuffer));
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+    D3D12_SUBRESOURCE_DATA subResource{};
+    subResource.pData = pixelData.data();
+    subResource.RowPitch = width * 4;
+    subResource.SlicePitch = subResource.RowPitch * height;
+
+    m_commandAllocator->Reset();
+    m_commandList->Reset(m_commandAllocator.Get(), nullptr);
+
+    UpdateSubresources(m_commandList.Get(), texture.Get(), uploadBuffer.Get(), 0, 0, 1, &subResource);
+    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+        texture.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    m_commandList->ResourceBarrier(1, &barrier);
+
+    m_commandList->Close();
+    ID3D12CommandList* cmdsLists[] = { m_commandList.Get() };
+    m_commandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+    FlushCommandQueue();
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    m_d3dDevice->CreateShaderResourceView(texture.Get(), &srvDesc, srvHandle);
+
+    return true;
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE D3DManager::GetSrvCpuHandle(int index) const
+{
+    return CD3DX12_CPU_DESCRIPTOR_HANDLE(
+        m_srvHeap->GetCPUDescriptorHandleForHeapStart(),
+        index,
+        m_cbvSrvUavDescriptorSize);
+}
+
+D3D12_GPU_DESCRIPTOR_HANDLE D3DManager::GetSrvGpuHandle(int index) const
+{
+    return CD3DX12_GPU_DESCRIPTOR_HANDLE(
+        m_srvHeap->GetGPUDescriptorHandleForHeapStart(),
+        index,
+        m_cbvSrvUavDescriptorSize);
+}
+
+bool D3DManager::HasTexture(SceneObject* obj) const
+{
+    return m_objectSrvIndex.find(obj) != m_objectSrvIndex.end();
+}
+
+void D3DManager::ReleaseTexture(SceneObject* obj)
+{
+    if (!obj)
+    {
+        return;
+    }
+
+    auto itIndex = m_objectSrvIndex.find(obj);
+    if (itIndex != m_objectSrvIndex.end())
+    {
+        m_freeSrvIndices.push_back(itIndex->second);
+        m_objectSrvIndex.erase(itIndex);
+    }
+
+    m_objectTextures.erase(obj);
+}
+
 // ============================================================================
 // 刷新命令队列（等待GPU完成）
 // ============================================================================
@@ -1148,6 +1476,10 @@ void D3DManager::Cleanup()
         CloseHandle(m_fenceEvent);
         m_fenceEvent = nullptr;
     }
+
+    m_objectTextures.clear();
+    m_objectSrvIndex.clear();
+    m_freeSrvIndices.clear();
 }
 
 // ============================================================================

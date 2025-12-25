@@ -28,7 +28,7 @@ HMENU CreateAppMenu()
 
 
     HMENU hPicMenu = CreatePopupMenu();
-    AppendMenu(hPicMenu, MF_STRING, IDM_EDIT_TRANSFORM, L"编辑变换(&E)");
+    AppendMenu(hPicMenu, MF_STRING, IDM_EDIT_TRANSFORM, L"编辑图形参数(&E)");
 
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hAddMenu, L"添加形状(&A)");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hSceneMenu, L"场景(&S)");
